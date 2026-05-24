@@ -7,6 +7,7 @@ from app.logging_config import setup_logging
 from app.clients.biotime_client import BioTimeClient
 from app.clients.odoo_client import OdooClient
 from app.db.database import init_db
+from app.repositories.punch_repository import PunchRepository
 from app.repositories.sync_state_repository import SyncStateRepository
 from app.services.attendance_service import AttendanceService
 from app.services.employee_mapper import EmployeeMapper
@@ -69,6 +70,7 @@ def main(dry_run: bool = False) -> None:
 
     with SessionLocal() as session:
         state_repo = SyncStateRepository(session)
+        punch_repo = PunchRepository(session)
         start_time, end_time = build_sync_window(state_repo)
 
         logger.info("Sync window: %s → %s", start_time, end_time)
@@ -76,6 +78,7 @@ def main(dry_run: bool = False) -> None:
             start_time=start_time,
             end_time=end_time,
             page_size=settings.sync_page_size,
+            punch_repo=punch_repo,
         )
 
         if not dry_run and stats.get("errors", 0) == 0:

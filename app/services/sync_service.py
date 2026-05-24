@@ -1,6 +1,7 @@
 import logging
 
 from app.clients.biotime_client import BioTimeClient
+from app.repositories.punch_repository import PunchRepository
 from app.services.attendance_service import AttendanceService
 from app.services.employee_mapper import EmployeeMapper
 from app.services.punch_normalizer import PunchNormalizer
@@ -18,6 +19,7 @@ class SyncService:
         normalizer: PunchNormalizer,
         local_timezone: str,
         dry_run: bool = False,
+        punch_repo: PunchRepository | None = None,
     ):
         self.biotime = biotime
         self.employee_mapper = employee_mapper
@@ -25,8 +27,9 @@ class SyncService:
         self.normalizer = normalizer
         self.local_timezone = local_timezone
         self.dry_run = dry_run
+        self.punch_repo = punch_repo
 
-    def sync_range(self, start_time: str, end_time: str, page_size: int = 1000) -> dict:
+    def sync_range(self, start_time: str, end_time: str, page_size: int = 1000, punch_repo: PunchRepository | None = None) -> dict:
         stats = {"fetched": 0, "created_check_in": 0, "closed_check_out": 0, "skipped": 0, "errors": 0}
         page = 1
 
@@ -48,6 +51,18 @@ class SyncService:
             logger.info("Page %d: %d transactions", page, len(rows))
 
             for raw_punch in rows:
+                biotime_id = raw_punch.get("id")
+
+                # Skip punches already registered in the DB
+                if self.punch_repo and self.punch_repo.exists(biotime_id):
+                    logger.info("Punch biotime_id=%s already processed, skipping", biotime_id)
+                    stats["skipped"] += 1
+                    continue
+
+                # Register as pending so we never reprocess it
+                if self.punch_repo:
+                    self.punch_repo.insert_pending(raw_punch)
+
                 try:
                     result = self.process_raw_punch(raw_punch)
                     status = result.get("status", "unknown")
@@ -55,9 +70,23 @@ class SyncService:
                         stats[status] += 1
                     else:
                         stats["skipped"] += 1
+
+                    if self.punch_repo:
+                        if status == "created_check_in":
+                            attendance_id = result.get("attendance_id")
+                            self.punch_repo.mark_synced(biotime_id, result.get("employee_id"), attendance_id)
+                        elif status == "closed_check_out":
+                            attendance_id = result.get("attendance_id")
+                            self.punch_repo.mark_synced(biotime_id, result.get("employee_id"), attendance_id)
+                        elif status == "skipped":
+                            reason = result.get("reason", "skipped")
+                            self.punch_repo.mark_skipped(biotime_id, reason)
+
                 except Exception as exc:
+                    if self.punch_repo:
+                        self.punch_repo.mark_failed(biotime_id, str(exc))
                     stats["errors"] += 1
-                    logger.error("Failed to process punch %s: %s", raw_punch.get("id"), exc)
+                    logger.error("Failed to process punch %s: %s", biotime_id, exc)
 
             if not response.get("next"):
                 break
