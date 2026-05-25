@@ -6,7 +6,7 @@ class Settings(BaseSettings):
     biotime_base_url: str
     biotime_username: str
     biotime_password: str
-    biotime_auth_type: str = "jwt"  # jwt or token
+    biotime_auth_type: str = "jwt"
 
     # Odoo
     odoo_url: str
@@ -17,10 +17,16 @@ class Settings(BaseSettings):
 
     # Sync
     local_timezone: str = "Asia/Muscat"
-    sync_interval_minutes: int = 5
     sync_page_size: int = 1000
     sync_start_from: str | None = None
-    auto_checkout_time: str = "15:00"  # HH:MM, applied when only one punch exists for a day
+    auto_checkout_time: str = "15:00"
+
+    # Daily job
+    daily_sync_hour: int = 22
+    daily_sync_minute: int = 0
+
+    # First run
+    initial_sync_months: int = 3
 
     # Database
     database_url: str = "sqlite:///./sync.db"
