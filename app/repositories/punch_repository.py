@@ -18,6 +18,7 @@ class PunchRepository:
             biotime_id=int(punch_data["id"]),
             emp_code=str(punch_data["emp_code"]),
             punch_time=str(punch_data["punch_time"]),
+            upload_time=str(punch_data.get("upload_time", "")),
             punch_state=str(punch_data.get("punch_state", "")),
             terminal_sn=punch_data.get("terminal_sn"),
             raw_payload=json.dumps(punch_data),

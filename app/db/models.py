@@ -13,6 +13,7 @@ class RawPunch(Base):
     biotime_id = Column(Integer, nullable=False)
     emp_code = Column(String(100), nullable=False)
     punch_time = Column(String(50), nullable=False)
+    upload_time = Column(String(50), nullable=False)
     punch_state = Column(String(20), nullable=True)
     terminal_sn = Column(String(100), nullable=True)
 
