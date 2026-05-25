@@ -47,6 +47,9 @@ class SyncService:
             if not rows:
                 break
 
+            # Ensure check-ins are always processed before their matching check-outs
+            rows.sort(key=self._punch_sort_key)
+
             stats["fetched"] += len(rows)
             logger.info("Page %d: %d transactions", page, len(rows))
 
@@ -94,6 +97,17 @@ class SyncService:
 
         logger.info("Sync complete: %s", stats)
         return stats
+
+    @staticmethod
+    def _punch_sort_key(punch: dict) -> tuple[str, int]:
+        """Return a sort key so that check-ins come before check-outs at the same time.
+
+        Primary  : ``punch_time`` (lexicographic – works for ``YYYY-MM-DD HH:MM:SS``)
+        Secondary: ``id``        (guarantees a total / deterministic order)
+        """
+        punch_time = punch.get("punch_time", "0000-00-00 00:00:00")
+        biotime_id = punch.get("id", 0)
+        return punch_time, biotime_id
 
     def process_raw_punch(self, raw_punch: dict) -> dict:
         punch = self.normalizer.normalize(raw_punch)
