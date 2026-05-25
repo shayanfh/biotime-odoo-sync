@@ -1,4 +1,5 @@
 import logging
+from collections import defaultdict
 
 from app.clients.biotime_client import BioTimeClient
 from app.repositories.punch_repository import PunchRepository
@@ -20,6 +21,7 @@ class SyncService:
         local_timezone: str,
         dry_run: bool = False,
         punch_repo: PunchRepository | None = None,
+        auto_checkout_time: str = "19:00",
     ):
         self.biotime = biotime
         self.employee_mapper = employee_mapper
@@ -28,12 +30,45 @@ class SyncService:
         self.local_timezone = local_timezone
         self.dry_run = dry_run
         self.punch_repo = punch_repo
+        self.auto_checkout_time = auto_checkout_time
 
-    def sync_range(self, start_time: str, end_time: str, page_size: int = 1000, punch_repo: PunchRepository | None = None) -> dict:
-        stats = {"fetched": 0, "created_check_in": 0, "closed_check_out": 0, "skipped": 0, "errors": 0}
-        page = 1
+    def sync_range(
+        self,
+        start_time: str,
+        end_time: str,
+        page_size: int = 1000,
+        punch_repo: PunchRepository | None = None,
+    ) -> dict:
+        if punch_repo is not None:
+            self.punch_repo = punch_repo
+
+        stats = {
+            "fetched": 0,
+            "loaded": 0,
+            "skipped_existing": 0,
+            "processed_days": 0,
+            "auto_checkout": 0,
+            "errors": 0,
+        }
 
         logger.info("Starting sync: %s → %s (dry_run=%s)", start_time, end_time, self.dry_run)
+
+        # ── Phase 1: fetch all pages and save raw punches with status=loaded ──
+        self._load_all_punches(start_time, end_time, page_size, stats)
+
+        # ── Phase 2: group by (emp_code, date) and push to Odoo ──────────────
+        self._process_loaded_punches(stats)
+
+        logger.info("Sync complete: %s", stats)
+        return stats
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Phase 1
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _load_all_punches(self, start_time: str, end_time: str, page_size: int, stats: dict) -> None:
+        page = 1
+        logger.info("Phase 1 – fetching punches from BioTime: %s → %s", start_time, end_time)
 
         while True:
             response = self.biotime.get_transactions(
@@ -47,110 +82,115 @@ class SyncService:
             if not rows:
                 break
 
-            # Ensure check-ins are always processed before their matching check-outs
-            rows.sort(key=self._punch_sort_key)
-
             stats["fetched"] += len(rows)
-            logger.info("Page %d: %d transactions", page, len(rows))
+            logger.info("Phase 1 – page %d: %d transactions", page, len(rows))
 
             for raw_punch in rows:
                 biotime_id = raw_punch.get("id")
 
-                # Skip punches already registered in the DB
                 if self.punch_repo and self.punch_repo.exists(biotime_id):
-                    logger.info("Punch biotime_id=%s already processed, skipping", biotime_id)
-                    stats["skipped"] += 1
+                    logger.debug("Punch biotime_id=%s already in DB, skipping", biotime_id)
+                    stats["skipped_existing"] += 1
                     continue
 
-                # Register as pending so we never reprocess it
                 if self.punch_repo:
-                    self.punch_repo.insert_pending(raw_punch)
+                    self.punch_repo.insert_loaded(raw_punch)
 
-                try:
-                    result = self.process_raw_punch(raw_punch)
-                    status = result.get("status", "unknown")
-                    if status in stats:
-                        stats[status] += 1
-                    else:
-                        stats["skipped"] += 1
-
-                    if self.punch_repo:
-                        if status == "created_check_in":
-                            attendance_id = result.get("attendance_id")
-                            self.punch_repo.mark_synced(biotime_id, result.get("employee_id"), attendance_id)
-                        elif status == "closed_check_out":
-                            attendance_id = result.get("attendance_id")
-                            self.punch_repo.mark_synced(biotime_id, result.get("employee_id"), attendance_id)
-                        elif status == "skipped":
-                            reason = result.get("reason", "skipped")
-                            self.punch_repo.mark_skipped(biotime_id, reason)
-
-                except Exception as exc:
-                    if self.punch_repo:
-                        self.punch_repo.mark_failed(biotime_id, str(exc))
-                    stats["errors"] += 1
-                    logger.error("Failed to process punch %s: %s", biotime_id, exc)
+                stats["loaded"] += 1
 
             if not response.get("next"):
                 break
             page += 1
 
-        logger.info("Sync complete: %s", stats)
-        return stats
+        logger.info(
+            "Phase 1 complete – fetched=%d  loaded=%d  skipped_existing=%d",
+            stats["fetched"], stats["loaded"], stats["skipped_existing"],
+        )
 
-    @staticmethod
-    def _punch_sort_key(punch: dict) -> tuple[str, int]:
-        """Return a sort key so that check-ins come before check-outs at the same time.
+    # ─────────────────────────────────────────────────────────────────────────
+    # Phase 2
+    # ─────────────────────────────────────────────────────────────────────────
 
-        Primary  : ``punch_time`` (lexicographic – works for ``YYYY-MM-DD HH:MM:SS``)
-        Secondary: ``id``        (guarantees a total / deterministic order)
-        """
-        punch_time = punch.get("punch_time", "0000-00-00 00:00:00")
-        biotime_id = punch.get("id", 0)
-        return punch_time, biotime_id
+    def _process_loaded_punches(self, stats: dict) -> None:
+        if not self.punch_repo:
+            return
 
-    def process_raw_punch(self, raw_punch: dict) -> dict:
-        punch = self.normalizer.normalize(raw_punch)
+        loaded = self.punch_repo.get_loaded_punches()
+        if not loaded:
+            logger.info("Phase 2 – no loaded punches to process")
+            return
 
-        employee = self.employee_mapper.find_employee_by_biotime_code(punch.emp_code)
+        logger.info("Phase 2 – processing %d loaded punches", len(loaded))
+
+        # Group by (emp_code, date)
+        groups: dict = defaultdict(list)
+        for punch in loaded:
+            date = str(punch.punch_time)[:10]  # "YYYY-MM-DD"
+            groups[(str(punch.emp_code), date)].append(punch)
+
+        logger.info("Phase 2 – %d employee-day groups found", len(groups))
+
+        for (emp_code, date), punches in groups.items():
+            punches.sort(key=lambda p: p.punch_time)
+            biotime_ids = [p.biotime_id for p in punches]
+            try:
+                self._process_day_group(emp_code, date, punches, biotime_ids, stats)
+            except Exception as exc:
+                self.punch_repo.mark_group_failed(biotime_ids, str(exc))
+                stats["errors"] += 1
+                logger.error("emp_code=%s date=%s – failed: %s", emp_code, date, exc)
+
+    def _process_day_group(
+        self,
+        emp_code: str,
+        date: str,
+        punches: list,
+        biotime_ids: list[int],
+        stats: dict,
+    ) -> None:
+        assert self.punch_repo is not None
+        employee = self.employee_mapper.find_employee_by_biotime_code(emp_code)
         if not employee:
-            raise ValueError(f"No Odoo employee for BioTime emp_code={punch.emp_code}")
+            raise ValueError(f"No Odoo employee for BioTime emp_code={emp_code}")
 
         employee_id = employee["id"]
-        punch_time_utc = local_to_utc_string(punch.punch_time, self.local_timezone)
 
-        if punch.is_check_in:
-            open_attendance = self.attendance_service.find_open_attendance(employee_id)
-            if open_attendance:
-                logger.warning(
-                    "emp_code=%s already has open attendance id=%d, skipping check-in",
-                    punch.emp_code,
-                    open_attendance["id"],
-                )
-                return {"status": "skipped", "reason": "already_open", "employee_id": employee_id}
+        check_in_time = punches[0].punch_time
+        check_in_utc = local_to_utc_string(check_in_time, self.local_timezone)
 
-            if self.dry_run:
-                logger.info("[DRY RUN] Would create check_in for employee_id=%d at %s", employee_id, punch_time_utc)
-                return {"status": "created_check_in", "employee_id": employee_id, "attendance_id": None}
+        if len(punches) > 1:
+            check_out_time = punches[-1].punch_time
+            check_out_utc = local_to_utc_string(check_out_time, self.local_timezone)
+            auto_applied = False
+            logger.info(
+                "emp_code=%s date=%s – %d punches | check_in=%s  check_out=%s",
+                emp_code, date, len(punches), check_in_time, check_out_time,
+            )
+        else:
+            auto_checkout_local = f"{date} {self.auto_checkout_time}:00"
+            check_out_utc = local_to_utc_string(auto_checkout_local, self.local_timezone)
+            auto_applied = True
+            logger.info(
+                "emp_code=%s date=%s – single punch at %s | auto check_out applied at %s",
+                emp_code, date, check_in_time, auto_checkout_local,
+            )
 
-            attendance_id = self.attendance_service.create_check_in(employee_id, punch_time_utc)
-            return {"status": "created_check_in", "employee_id": employee_id, "attendance_id": attendance_id}
+        if self.dry_run:
+            logger.info(
+                "[DRY RUN] Would create attendance for employee_id=%d: check_in=%s  check_out=%s",
+                employee_id, check_in_utc, check_out_utc,
+            )
+            self.punch_repo.mark_group_synced(biotime_ids, employee_id, None)
+            stats["processed_days"] += 1
+            if auto_applied:
+                stats["auto_checkout"] += 1
+            return
 
-        if punch.is_check_out:
-            open_attendance = self.attendance_service.find_open_attendance(employee_id)
-            if not open_attendance:
-                raise ValueError(f"Check-out received but no open attendance for emp_code={punch.emp_code}")
+        attendance_id = self.attendance_service.create_full_attendance(
+            employee_id, check_in_utc, check_out_utc
+        )
+        self.punch_repo.mark_group_synced(biotime_ids, employee_id, attendance_id)
 
-            if self.dry_run:
-                logger.info(
-                    "[DRY RUN] Would close attendance id=%d for employee_id=%d at %s",
-                    open_attendance["id"],
-                    employee_id,
-                    punch_time_utc,
-                )
-                return {"status": "closed_check_out", "employee_id": employee_id, "attendance_id": open_attendance["id"]}
-
-            self.attendance_service.close_check_out(open_attendance["id"], punch_time_utc)
-            return {"status": "closed_check_out", "employee_id": employee_id, "attendance_id": open_attendance["id"]}
-
-        raise ValueError(f"Unknown punch_state={punch.punch_state!r} for emp_code={punch.emp_code}")
+        stats["processed_days"] += 1
+        if auto_applied:
+            stats["auto_checkout"] += 1

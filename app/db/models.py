@@ -19,7 +19,7 @@ class RawPunch(Base):
 
     raw_payload = Column(Text, nullable=False)
 
-    # pending | synced | skipped | failed
+    # loaded | synced | failed
     status = Column(String(30), default="pending", nullable=False)
     error_message = Column(Text, nullable=True)
 

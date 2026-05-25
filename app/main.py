@@ -66,6 +66,7 @@ def main(dry_run: bool = False) -> None:
         normalizer=normalizer,
         local_timezone=settings.local_timezone,
         dry_run=dry_run,
+        auto_checkout_time=settings.auto_checkout_time,
     )
 
     with SessionLocal() as session:

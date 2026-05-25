@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     sync_interval_minutes: int = 5
     sync_page_size: int = 1000
     sync_start_from: str | None = None
+    auto_checkout_time: str = "19:00"  # HH:MM, applied when only one punch exists for a day
 
     # Database
     database_url: str = "sqlite:///./sync.db"

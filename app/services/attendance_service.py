@@ -26,6 +26,17 @@ class AttendanceService:
         logger.info("Created hr.attendance id=%d for employee_id=%d", attendance_id, employee_id)
         return attendance_id
 
+    def create_full_attendance(self, employee_id: int, check_in_utc: str, check_out_utc: str) -> int:
+        attendance_id = self.odoo.create(
+            "hr.attendance",
+            {"employee_id": employee_id, "check_in": check_in_utc, "check_out": check_out_utc},
+        )
+        logger.info(
+            "Created hr.attendance id=%d for employee_id=%d (check_in=%s, check_out=%s)",
+            attendance_id, employee_id, check_in_utc, check_out_utc,
+        )
+        return attendance_id
+
     def close_check_out(self, attendance_id: int, check_out_utc: str) -> bool:
         result = self.odoo.write(
             "hr.attendance",
