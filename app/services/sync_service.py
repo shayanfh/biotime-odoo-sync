@@ -21,7 +21,7 @@ class SyncService:
         local_timezone: str,
         dry_run: bool = False,
         punch_repo: PunchRepository | None = None,
-        auto_checkout_time: str = "19:00",
+        auto_checkout_time: str = "15:00",
     ):
         self.biotime = biotime
         self.employee_mapper = employee_mapper
