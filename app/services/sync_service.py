@@ -28,8 +28,10 @@ class SyncService:
         self.attendance_service = attendance_service
         self.normalizer = normalizer
         self.local_timezone = local_timezone
+        # If True, no data is written to Odoo — useful for testing
         self.dry_run = dry_run
         self.punch_repo = punch_repo
+        # Default check-out time applied when an employee has only one punch for the day
         self.auto_checkout_time = auto_checkout_time
 
     def sync_range(
@@ -39,16 +41,17 @@ class SyncService:
         page_size: int = 1000,
         punch_repo: PunchRepository | None = None,
     ) -> dict:
+        # Allow caller to override the punch repository at sync time
         if punch_repo is not None:
             self.punch_repo = punch_repo
 
         stats = {
-            "fetched": 0,
-            "loaded": 0,
-            "skipped_existing": 0,
-            "processed_days": 0,
-            "auto_checkout": 0,
-            "errors": 0,
+            "fetched": 0,           # total punch records received from BioTime
+            "loaded": 0,            # new punches saved to local DB
+            "skipped_existing": 0,  # punches already in DB (duplicate protection)
+            "processed_days": 0,    # employee-day groups successfully pushed to Odoo
+            "auto_checkout": 0,     # days where auto check-out was applied
+            "errors": 0,            # employee-day groups that failed
         }
 
         logger.info("Starting sync: %s → %s (dry_run=%s)", start_time, end_time, self.dry_run)
@@ -63,7 +66,7 @@ class SyncService:
         return stats
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Phase 1
+    # Phase 1 — Pull from BioTime and store locally
     # ─────────────────────────────────────────────────────────────────────────
 
     def _load_all_punches(self, start_time: str, end_time: str, page_size: int, stats: dict) -> None:
@@ -78,6 +81,7 @@ class SyncService:
                 page_size=page_size,
             )
 
+            # BioTime API may return results under "data" or "results" key
             rows = response.get("data") or response.get("results") or []
             if not rows:
                 break
@@ -88,16 +92,19 @@ class SyncService:
             for raw_punch in rows:
                 biotime_id = raw_punch.get("id")
 
+                # Skip punches we have already stored to avoid duplicates
                 if self.punch_repo and self.punch_repo.exists(biotime_id):
                     logger.debug("Punch biotime_id=%s already in DB, skipping", biotime_id)
                     stats["skipped_existing"] += 1
                     continue
 
+                # Save the raw punch to local DB with status="loaded" (not yet sent to Odoo)
                 if self.punch_repo:
                     self.punch_repo.insert_loaded(raw_punch)
 
                 stats["loaded"] += 1
 
+            # Stop when there are no more pages
             if not response.get("next"):
                 break
             page += 1
@@ -108,7 +115,7 @@ class SyncService:
         )
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Phase 2
+    # Phase 2 — Group punches and create attendance records in Odoo
     # ─────────────────────────────────────────────────────────────────────────
 
     def _process_loaded_punches(self, stats: dict) -> None:
@@ -122,20 +129,22 @@ class SyncService:
 
         logger.info("Phase 2 – processing %d loaded punches", len(loaded))
 
-        # Group by (emp_code, date)
+        # Group all punches by (employee_code, date) so each group becomes one attendance record
         groups: dict = defaultdict(list)
         for punch in loaded:
-            date = str(punch.punch_time)[:10]  # "YYYY-MM-DD"
+            date = str(punch.punch_time)[:10]  # extract "YYYY-MM-DD" from datetime
             groups[(str(punch.emp_code), date)].append(punch)
 
         logger.info("Phase 2 – %d employee-day groups found", len(groups))
 
         for (emp_code, date), punches in groups.items():
+            # Sort ascending so first punch = check-in, last punch = check-out
             punches.sort(key=lambda p: p.punch_time)
             biotime_ids = [p.biotime_id for p in punches]
             try:
                 self._process_day_group(emp_code, date, punches, biotime_ids, stats)
             except Exception as exc:
+                # Mark the whole group as failed and continue with the next group
                 self.punch_repo.mark_group_failed(biotime_ids, str(exc))
                 stats["errors"] += 1
                 logger.error("emp_code=%s date=%s – failed: %s", emp_code, date, exc)
@@ -149,16 +158,20 @@ class SyncService:
         stats: dict,
     ) -> None:
         assert self.punch_repo is not None
+
+        # Resolve BioTime employee code to an Odoo employee record
         employee = self.employee_mapper.find_employee_by_biotime_code(emp_code)
         if not employee:
             raise ValueError(f"No Odoo employee for BioTime emp_code={emp_code}")
 
         employee_id = employee["id"]
 
+        # First punch of the day is always the check-in
         check_in_time = punches[0].punch_time
         check_in_utc = local_to_utc_string(check_in_time, self.local_timezone)
 
         if len(punches) > 1:
+            # Last punch of the day is the check-out
             check_out_time = punches[-1].punch_time
             check_out_utc = local_to_utc_string(check_out_time, self.local_timezone)
             auto_applied = False
@@ -167,6 +180,7 @@ class SyncService:
                 emp_code, date, len(punches), check_in_time, check_out_time,
             )
         else:
+            # Only one punch recorded — apply the configured default check-out time
             auto_checkout_local = f"{date} {self.auto_checkout_time}:00"
             check_out_utc = local_to_utc_string(auto_checkout_local, self.local_timezone)
             auto_applied = True
@@ -176,6 +190,7 @@ class SyncService:
             )
 
         if self.dry_run:
+            # In dry-run mode, log what would happen but do not write to Odoo
             logger.info(
                 "[DRY RUN] Would create attendance for employee_id=%d: check_in=%s  check_out=%s",
                 employee_id, check_in_utc, check_out_utc,
@@ -186,6 +201,7 @@ class SyncService:
                 stats["auto_checkout"] += 1
             return
 
+        # Create the attendance record in Odoo and mark punches as synced
         attendance_id = self.attendance_service.create_full_attendance(
             employee_id, check_in_utc, check_out_utc
         )
