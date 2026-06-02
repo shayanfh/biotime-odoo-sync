@@ -126,6 +126,14 @@ def run_sync_range(
 
         logger.info("Sync finished. Stats: %s", stats)
 
+        error_count = stats.get("errors", 0)
+        if error_count > 0:
+            logger.warning(
+                "⚠  Done. You have %d failed punch group(s) that could not be saved to Odoo. "
+                "Please check the logs above, fix the issue, and run again — failed punches will be retried automatically.",
+                error_count,
+            )
+
         return stats
 
 

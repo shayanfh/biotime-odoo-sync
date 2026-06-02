@@ -58,6 +58,22 @@ class PunchRepository:
         )
         self.session.commit()
 
+    def retry_if_failed(self, biotime_id: int) -> bool:
+        """Reset a failed punch back to 'loaded' so Phase 2 will retry it. Returns True if reset happened."""
+        updated = (
+            self.session.query(RawPunch)
+            .filter_by(biotime_id=biotime_id, status="failed")
+            .update(
+                {"status": "loaded", "error_message": None, "processed_at": None},
+                synchronize_session="fetch",
+            )
+        )
+        self.session.commit()
+        return updated > 0
+
+    def count_failed(self) -> int:
+        return self.session.query(RawPunch).filter_by(status="failed").count()
+
     def mark_group_failed(self, biotime_ids: list[int], error: str) -> None:
         self.session.query(RawPunch).filter(RawPunch.biotime_id.in_(biotime_ids)).update(
             {

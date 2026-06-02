@@ -49,6 +49,7 @@ class SyncService:
             "fetched": 0,           # total punch records received from BioTime
             "loaded": 0,            # new punches saved to local DB
             "skipped_existing": 0,  # punches already in DB (duplicate protection)
+            "retried_failed": 0,    # previously-failed punches reset to loaded for retry
             "processed_days": 0,    # employee-day groups successfully pushed to Odoo
             "auto_checkout": 0,     # days where auto check-out was applied
             "errors": 0,            # employee-day groups that failed
@@ -92,10 +93,15 @@ class SyncService:
             for raw_punch in rows:
                 biotime_id = raw_punch.get("id")
 
-                # Skip punches we have already stored to avoid duplicates
                 if self.punch_repo and self.punch_repo.exists(biotime_id):
-                    logger.debug("Punch biotime_id=%s already in DB, skipping", biotime_id)
-                    stats["skipped_existing"] += 1
+                    # If the punch previously failed, reset it to "loaded" so Phase 2 retries it
+                    if self.punch_repo.retry_if_failed(biotime_id):
+                        logger.info("Punch biotime_id=%s was failed — reset to loaded for retry", biotime_id)
+                        stats["retried_failed"] += 1
+                    else:
+                        # Already loaded/synced — no action needed
+                        logger.debug("Punch biotime_id=%s already in DB, skipping", biotime_id)
+                        stats["skipped_existing"] += 1
                     continue
 
                 # Save the raw punch to local DB with status="loaded" (not yet sent to Odoo)
