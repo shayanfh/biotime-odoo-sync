@@ -48,3 +48,6 @@ Thumbs.db
 
 # Docker
 .dockerignore
+
+BioTimeOdooSync.spec
+run_sync.py
