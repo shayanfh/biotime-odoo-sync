@@ -51,3 +51,5 @@ Thumbs.db
 
 BioTimeOdooSync.spec
 run_sync.py
+log.txt
+Output.md

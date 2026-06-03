@@ -1,5 +1,6 @@
 import logging
 from collections import defaultdict
+from datetime import datetime, time
 
 from app.clients.biotime_client import BioTimeClient
 from app.repositories.punch_repository import PunchRepository
@@ -186,13 +187,50 @@ class SyncService:
                 emp_code, date, len(punches), check_in_time, check_out_time,
             )
         else:
-            # Only one punch recorded — apply the configured default check-out time
+            # Only one punch recorded.
+            # If punch time is before auto_checkout_time, treat it as check-in and apply auto check-out.
+            # If punch time is after auto_checkout_time, treat it as missing check-in and log an error.
+
+            auto_checkout_t = datetime.strptime(self.auto_checkout_time, "%H:%M").time()
+
+            if isinstance(check_in_time, str):
+                punch_dt = datetime.strptime(check_in_time, "%Y-%m-%d %H:%M:%S")
+            else:
+                punch_dt = check_in_time
+
+            punch_t = punch_dt.time()
+
+            employee_name = (
+                employee.get("name")
+                or employee.get("display_name")
+                or employee.get("employee_name")
+                or f"employee_id={employee_id}"
+            )
+
+            if punch_t > auto_checkout_t:
+                error_message = (
+                    f"Missing check-in detected: {employee_name} "
+                    f"(BioTime emp_code={emp_code}) has only one punch on {date}. "
+                    f"The punch time is {check_in_time}, which is after auto_checkout_time={self.auto_checkout_time}. "
+                    f"This punch is probably a check-out, but check-in is missing."
+                )
+
+                logger.error(error_message)
+
+                # Mark this group as failed in _process_loaded_punches()
+                raise ValueError(error_message)
+
+            # Old behavior: punch is before auto_checkout_time, so apply default check-out
             auto_checkout_local = f"{date} {self.auto_checkout_time}:00"
             check_out_utc = local_to_utc_string(auto_checkout_local, self.local_timezone)
             auto_applied = True
+
             logger.info(
                 "emp_code=%s date=%s – single punch at %s | auto check_out applied at %s",
-                emp_code, date, check_in_time, auto_checkout_local,
+                emp_code,
+                date,
+                check_in_time,
+                auto_checkout_local,
             )
 
         if self.dry_run:
