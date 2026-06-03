@@ -252,7 +252,7 @@ def start_scheduler(dry_run: bool = False) -> None:
 
 
 def main(dry_run: bool = False) -> None:
-    setup_logging()
+    setup_logging(level=settings.log_level)
 
     # 1) First run only: sync last 3 months
     run_initial_sync_if_needed(dry_run=dry_run)

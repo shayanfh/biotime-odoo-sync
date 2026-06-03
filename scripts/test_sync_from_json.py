@@ -73,7 +73,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
-    setup_logging()
+    setup_logging(level=settings.log_level)
     args = parse_args()
 
     db_path = os.path.join(PROJECT_ROOT, "sync.db")

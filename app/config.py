@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     # Database
     database_url: str = "sqlite:///./sync.db"
 
+    # Logging
+    log_level: str = "INFO"
+
     class Config:
         env_file = ".env"
 

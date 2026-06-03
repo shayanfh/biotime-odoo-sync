@@ -14,7 +14,7 @@ from app.services.sync_service import SyncService
 from app.logging_config import setup_logging
 from app.utils.datetime_utils import local_now_string
 
-setup_logging()
+setup_logging(level=settings.log_level)
 
 
 def main():
