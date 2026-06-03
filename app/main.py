@@ -2,7 +2,7 @@ import logging
 import sys
 import time
 import calendar
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -53,7 +53,7 @@ def get_local_now() -> datetime:
 
 
 def get_initial_sync_window() -> tuple[str, str]:
-    end_dt = get_local_now()
+    end_dt = get_local_now() - timedelta(days=1)
     start_dt = subtract_months(end_dt, settings.initial_sync_months)
 
     return format_dt(start_dt), format_dt(end_dt)
