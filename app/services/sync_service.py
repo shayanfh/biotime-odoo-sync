@@ -89,7 +89,7 @@ class SyncService:
                 break
 
             stats["fetched"] += len(rows)
-            logger.info("Phase 1 – page %d: %d transactions", page, len(rows))
+            logger.debug("Phase 1 – page %d: %d transactions", page, len(rows))
 
             for raw_punch in rows:
                 biotime_id = raw_punch.get("id")
@@ -97,10 +97,9 @@ class SyncService:
                 if self.punch_repo and self.punch_repo.exists(biotime_id):
                     # If the punch previously failed, reset it to "loaded" so Phase 2 retries it
                     if self.punch_repo.retry_if_failed(biotime_id):
-                        logger.info("Punch biotime_id=%s was failed — reset to loaded for retry", biotime_id)
+                        logger.debug("Punch biotime_id=%s was failed — reset to loaded for retry", biotime_id)
                         stats["retried_failed"] += 1
                     else:
-                        # Already loaded/synced — no action needed
                         logger.debug("Punch biotime_id=%s already in DB, skipping", biotime_id)
                         stats["skipped_existing"] += 1
                     continue
@@ -178,11 +177,10 @@ class SyncService:
         check_in_utc = local_to_utc_string(check_in_time, self.local_timezone)
 
         if len(punches) > 1:
-            # Last punch of the day is the check-out
             check_out_time = punches[-1].punch_time
             check_out_utc = local_to_utc_string(check_out_time, self.local_timezone)
             auto_applied = False
-            logger.info(
+            logger.debug(
                 "emp_code=%s date=%s – %d punches | check_in=%s  check_out=%s",
                 emp_code, date, len(punches), check_in_time, check_out_time,
             )
@@ -225,7 +223,7 @@ class SyncService:
             check_out_utc = local_to_utc_string(auto_checkout_local, self.local_timezone)
             auto_applied = True
 
-            logger.info(
+            logger.debug(
                 "emp_code=%s date=%s – single punch at %s | auto check_out applied at %s",
                 emp_code,
                 date,
@@ -234,8 +232,7 @@ class SyncService:
             )
 
         if self.dry_run:
-            # In dry-run mode, log what would happen but do not write to Odoo
-            logger.info(
+            logger.debug(
                 "[DRY RUN] Would create attendance for employee_id=%d: check_in=%s  check_out=%s",
                 employee_id, check_in_utc, check_out_utc,
             )
