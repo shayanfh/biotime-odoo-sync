@@ -1,11 +1,10 @@
 import logging
 import sys
-import time
 import calendar
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.schedulers.blocking import BlockingScheduler
 
 from app.config import settings
 from app.logging_config import setup_logging
@@ -185,6 +184,13 @@ def run_initial_sync_if_needed(dry_run: bool = False) -> None:
 
 
 def run_daily_sync(dry_run: bool = False) -> None:
+    try:
+        _run_daily_sync(dry_run=dry_run)
+    except Exception:
+        logger.exception("Unhandled exception in daily sync job")
+
+
+def _run_daily_sync(dry_run: bool = False) -> None:
     start_time, end_time, sync_date = get_today_sync_window()
 
     logger.info(
@@ -221,7 +227,7 @@ def run_daily_sync(dry_run: bool = False) -> None:
 
 
 def start_scheduler(dry_run: bool = False) -> None:
-    scheduler = BackgroundScheduler(timezone=settings.local_timezone)
+    scheduler = BlockingScheduler(timezone=settings.local_timezone)
 
     scheduler.add_job(
         run_daily_sync,
@@ -231,11 +237,10 @@ def start_scheduler(dry_run: bool = False) -> None:
         kwargs={"dry_run": dry_run},
         max_instances=1,
         coalesce=True,
+        misfire_grace_time=3600,
         id="daily_biotime_odoo_sync",
         replace_existing=True,
     )
-
-    scheduler.start()
 
     logger.info(
         "Scheduler started. Daily sync will run every day at %02d:%02d timezone=%s",
@@ -245,9 +250,8 @@ def start_scheduler(dry_run: bool = False) -> None:
     )
 
     try:
-        while True:
-            time.sleep(60)
-    except KeyboardInterrupt:
+        scheduler.start()
+    except (KeyboardInterrupt, SystemExit):
         logger.info("Stopping scheduler...")
         scheduler.shutdown()
 
