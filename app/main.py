@@ -54,6 +54,7 @@ def get_local_now() -> datetime:
 
 def get_initial_sync_window() -> tuple[str, str]:
     end_dt = get_local_now() - timedelta(days=1)
+    end_dt = end_dt.replace(hour=23, minute=59, second=59)
     start_dt = subtract_months(end_dt, settings.initial_sync_months)
 
     return format_dt(start_dt), format_dt(end_dt)
