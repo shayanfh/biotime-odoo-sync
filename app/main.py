@@ -137,6 +137,17 @@ def run_sync_range(
         return stats
 
 
+def clear_today_punches() -> None:
+    today = get_local_now().strftime("%Y-%m-%d")
+    SessionLocal = init_db(settings.database_url)
+
+    with SessionLocal() as session:
+        punch_repo = PunchRepository(session)
+        deleted = punch_repo.delete_by_date(today)
+
+    logger.info("Cleared %d punch record(s) for today (%s) from local DB.", deleted, today)
+
+
 def run_initial_sync_if_needed(dry_run: bool = False) -> None:
     SessionLocal = init_db(settings.database_url)
 
@@ -259,10 +270,10 @@ def start_scheduler(dry_run: bool = False) -> None:
 def main(dry_run: bool = False) -> None:
     setup_logging(level=settings.log_level)
 
-    # 1) First run only: sync last 3 months
+    clear_today_punches()
+
     run_initial_sync_if_needed(dry_run=dry_run)
 
-    # 2) Then keep app alive and run daily job at 22:00
     start_scheduler(dry_run=dry_run)
 
 

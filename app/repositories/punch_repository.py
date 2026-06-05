@@ -85,6 +85,16 @@ class PunchRepository:
         )
         self.session.commit()
 
+    def delete_by_date(self, date_str: str) -> int:
+        """Delete all punch records whose punch_time falls on date_str (YYYY-MM-DD). Returns deleted count."""
+        deleted = (
+            self.session.query(RawPunch)
+            .filter(RawPunch.punch_time.like(f"{date_str}%"))
+            .delete(synchronize_session=False)
+        )
+        self.session.commit()
+        return deleted
+
     # ── legacy single-punch helpers (kept for backward compatibility) ──────────
 
     def insert_pending(self, punch_data: dict) -> RawPunch | None:
