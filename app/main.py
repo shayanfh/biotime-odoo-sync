@@ -274,9 +274,15 @@ def main(dry_run: bool = False) -> None:
 
     run_initial_sync_if_needed(dry_run=dry_run)
 
-    start_scheduler(dry_run=dry_run)
+    # start_scheduler(dry_run=dry_run)
 
 
 if __name__ == "__main__":
     dry = "--dry-run" in sys.argv
-    main(dry_run=dry)
+    once = "--once" in sys.argv
+
+    if once:
+        setup_logging(level=settings.log_level)
+        run_daily_sync(dry_run=dry)
+    else:
+        main(dry_run=dry)
